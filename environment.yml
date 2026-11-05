@@ -1,0 +1,26 @@
+name: discoch
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12          # >= 3.11 required (datetime.UTC)
+  # core
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn         # model pickle and training; keep close to the version the model was pickled with
+  - threadpoolctl
+  - pyyaml               # config.yaml
+  # geospatial
+  - gdal
+  - rasterio
+  - shapely>=2
+  - geopandas
+  - pyogrio
+  # plotting and basemaps
+  - matplotlib
+  - contextily
+  - requests
+  - pillow
+  # notebooks
+  - jupyterlab
+  - ipykernel

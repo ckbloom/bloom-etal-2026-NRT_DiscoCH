@@ -1,0 +1,27 @@
+# Machine-specific paths (template: config.example.yaml)
+config.yaml
+
+# Run outputs and scratch work
+output/
+scratch/
+
+# Test notebooks and superseded code
+notebooks/DiscoCH_2026_vs_2018.ipynb
+notebooks/DiscoCH_SVC_rbf10.ipynb
+src/dep/
+
+# Large / superseded data (the model and mask are shared outside git)
+*.pkl
+data/dep/
+
+# Python
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# IDE
+.idea/
+.vscode/
+
+# ArcGIS metadata (records local processing paths)
+*.shp.xml

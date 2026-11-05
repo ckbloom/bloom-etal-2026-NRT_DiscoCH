@@ -1,0 +1,30 @@
+# DiscoCH machine-specific paths.
+#
+# Copy this file to config.yaml (which git ignores) and set the paths for your machine.
+# - Relative paths are relative to the project root.
+# - Use forward slashes, or single quotes around Windows paths: 'D:\data\x'.
+# - Leave a value empty for data you don't have; the steps that need it will say so.
+
+# --- FORCE level-3 Sentinel-2 VI time series (*_TSS.tif, one folder per tile) ---
+force_network_dir: "//server/share/FORCE/level3_tss"   # source on the network (transfer step)
+force_dir: "D:/FORCE/level3_tss"                       # local copy used by the pipeline
+force_2018_dir:                                        # 2018 tiles (interpolation example)
+
+# --- Project data (in the repository) ---
+output_dir: "output"
+tiles_csv: "data/CH_FORCE_Grids.csv"
+model_path: "data/empirical_discoloration_model_pipeline_2025_6_2.pkl"
+mask_path: "data/DiscoCH_2026_Mask.tif"
+example_extent: "data/example_extents/Herbetswil.shp"
+
+# --- Validation ---
+validation_gpkg:          # ground-truth polygons, Discolored = 1/0, one layer per survey (Mapping_2026.gpkg)
+validation_30km_gpkg:     # mapped discolored polygons for polygon recall (CH30km_Validation.gpkg)
+
+# --- Boundaries ---
+districts:                # fgeolib_geolib_g1b20_LV95.shp (fields bzname, ktnr)
+biogeo_regions:           # N2020_Revision_BiogeoRegion.shp (field DERegionNa)
+
+# --- Other years / one-off inputs ---
+mosaics_2018:             # 2018 discoloration mosaics (Proba_mosaic_*.tif)
+forest_template:          # waldmischungsgrad_2023_10m_2056.tif (grid template for mask.py one-off run)
