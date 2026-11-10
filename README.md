@@ -1,10 +1,10 @@
-# DiscoCH 2026 Operational
+# Near-real-time monitoring of early leaf discoloration signals unprecedented drought stress in Switzerland’s European beech forests
 
-Near-real-time mapping of early leaf discoloration in Swiss forests (mainly European beech) from Sentinel-2.
-Each run turns FORCE vegetation-index time series into a probability of discoloration for every 10 m pixel,
-on a 5-day grid of dates through the season. It then masks the results to forest, validates them against
-mapped polygons, and summarizes them nationally, per district, and on hexagon maps. Every output can be
-compared with the 2018 drought year.
+Colin K. Bloom, Dominique Weber, Marius Rütschi, Tiziana L. Koch, Frank Krumm, Katrin Meusburger, Andri Baltensweiler
+
+This repository contains the analysis code for the manuscript above. The pre-trained early leaf discoloration
+model of Bloom et al. (2026) was applied to a near-real-time interpolated Sentinel-2 time series 
+to identify early leaf discoloration in Swiss European beech forests every five-days throughout the 2026 growing season.
 
 ## Workflow
 
@@ -180,7 +180,7 @@ level4_rbf/<year>/<tile>/*_<VI>_TSS_TSI.tif   interpolated 5-day VIs (int16, nod
 - FORCE level-3 TSS time series (network share, copied locally with `transfer()`)
 - Validation polygons (e.g. `Mapping_2026.gpkg`, with `Discolored` = 1/0 and one layer per survey)
 - District boundaries (`fgeolib_geolib_g1b20_LV95.shp`, field `bzname`) and biogeographic regions
-- 2018 discoloration mosaics (Bloom et al.), used for the year comparisons
+- 2018 discoloration mosaics (Bloom et al., 2026), used for the year comparisons
 
 Set their locations in `config.yaml` (see [Configure paths](#configure-paths-for-your-machine)).
 
