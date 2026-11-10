@@ -42,7 +42,7 @@ from src.disco_ch_operational.apply_model import DEFAULT_VI_PATTERN
 from src.disco_ch_operational.mask import mask_and_scale_dir
 from src.disco_ch_operational.utils import (
     as_date, band_dates, chunk_windows, discover_tile_dirs, find_vi_file, mosaic_by_filename,
-    read_date_mean, read_float, write_float,
+    read_date_mean, read_float, to_cog, write_float,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -131,7 +131,8 @@ def mosaic_and_mask(out_dir, mask_path=MASK_PATH, pattern="*.tif", threads=4):
 def difference(a_path, b_path, out_path, scale=VI_SCALE, block=4096):
     """a - b of two masked layers on the same grid (mask_and_scale_dir()
     outputs), NaN where either is nodata, written block by block as int16
-    with band scale 1/scale (differences beyond +-32767/scale are clipped).
+    with band scale 1/scale (differences beyond +-32767/scale are clipped),
+    then converted to a COG (DEFLATE + predictor 2, overviews; utils.to_cog()).
 
     :return: out_path.
     """
@@ -139,8 +140,8 @@ def difference(a_path, b_path, out_path, scale=VI_SCALE, block=4096):
         if (a.shape, a.transform, a.crs) != (b.shape, b.transform, b.crs):
             raise ValueError(f"{a_path} and {b_path} are not on the same grid")
         profile = a.profile
-        profile.update(dtype="int16", nodata=-32768, compress="LZW", predictor=2, tiled=True,
-                       blockxsize=256, blockysize=256)
+        profile.update(driver="GTiff", dtype="int16", nodata=-32768, compress="LZW", predictor=2,
+                       tiled=True, blockxsize=256, blockysize=256)
         tmp = str(out_path) + ".tmp"
         n_clipped = 0
         with rasterio.open(tmp, "w", **profile) as dst:
@@ -152,7 +153,10 @@ def difference(a_path, b_path, out_path, scale=VI_SCALE, block=4096):
                 out = np.where(np.isnan(d), -32768, np.clip(v, -32767, 32767)).astype("int16")
                 dst.write(out, 1, window=win)
             dst.scales, dst.offsets = (1.0 / scale,), (0.0,)
-    os.replace(tmp, out_path)
+    try:
+        to_cog(tmp, out_path)
+    finally:
+        os.remove(tmp)
     print(f"Saved {out_path}" + (f" ({n_clipped} pixel(s) clipped)" if n_clipped else ""))
     return out_path
 

@@ -30,7 +30,7 @@ masked Disco_Proba_<date>.tif   (stored 0–10000, band scale 0.0001 → probabi
 
 ### Model inputs
 
-The model uses five VIs: **NDVI, EVI, NDMI, CIRE (CIre), CCI**. For each pixel and date, each VI is scaled to
+The model uses five VIs: **NDVI, EVI, NDMI, CIRE (CIre), GRVI (CCI)**. For each pixel and date, each VI is scaled to
 `(value − min) / (max − min)`, where min and max are taken over the season from `start_date` up to and including
 that date. Nothing after the date is used. The model runs only in `model_months` (default June–September).
 The feature names follow the pre-trained pipeline (`MODEL_FEATURES` in `apply_model.py`).

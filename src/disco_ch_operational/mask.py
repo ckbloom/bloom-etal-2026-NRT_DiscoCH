@@ -11,7 +11,9 @@ Per raster:
      the target CRS with nearest-neighbour if it isn't already in it.
   2. Set every pixel where the mask isn't exactly 1 to nodata.
   3. Write as int16 scaled by the largest of 10000/1000/100/10/1 that fits
-     (utils.write_scaled_int(): nodata -32768, GDAL band scale 1/scale).
+     (utils.write_scaled_int(): nodata -32768, GDAL band scale 1/scale), as
+     a Cloud Optimized GeoTIFF: DEFLATE + predictor 2, 512 px blocks,
+     internal overviews (average; nearest with Resampling.nearest).
 
 mask_path=None skips the masking: each raster is only reprojected and
 scaled -- onto template_path's grid if one is given (CRS, resolution,
@@ -140,7 +142,9 @@ def mask_and_scale_file(in_path, out_path, keep=None, transform=None, crs=None,
     data = data[0]
     if keep is not None:
         data[~keep] = np.nan
-    return write_scaled_int(data, out_path, transform, crs, dtype=dtype)
+    overview_resampling = "nearest" if resampling == Resampling.nearest else "average"
+    return write_scaled_int(data, out_path, transform, crs, dtype=dtype, cog=True,
+                            overview_resampling=overview_resampling, threads=threads)
 
 
 # ---------------------------------------------------------------------
@@ -232,8 +236,8 @@ if __name__ == "__main__":
     one_off_dir = os.path.join(cfg["output_dir"], "JAG_Disco_2018_Unclipped")
     mask_and_scale_dir(
         input_dir=os.path.join(one_off_dir, "mosaic"),
-        mask_path=None,
-        template_path=cfg.require("forest_template"),
+        mask_path=cfg.require("mask_path"),
+        # template_path=cfg.require("forest_template"),
         overwrite=False,
-        output_dir=os.path.join(one_off_dir, "scaled"),
+        output_dir=os.path.join(one_off_dir, "masked"),
     )

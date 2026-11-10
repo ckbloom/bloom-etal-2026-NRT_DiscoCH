@@ -20,6 +20,7 @@ from datetime import date, datetime
 
 import numpy as np
 import rasterio
+import rasterio.shutil
 from rasterio.merge import merge as rio_merge
 from rasterio.warp import reproject, Resampling
 
@@ -210,12 +211,30 @@ def write_float(arr, path, transform, crs):
     os.replace(tmp, path)
 
 
-def write_scaled_int(arr, path, transform, crs, dtype="int16"):
+def to_cog(src_path, dst_path, overview_resampling="average", threads=1):
+    """Copies a GeoTIFF to a Cloud Optimized GeoTIFF: DEFLATE + predictor 2
+    (horizontal differencing, for integer data), 512 px blocks, internal
+    overviews (AUTO: halved until they fit one block) resampled with
+    overview_resampling ("average" for continuous data, "nearest" for
+    classes). Nodata, band scale/offset and tags carry over. Written to a
+    temporary file and swapped into place."""
+    tmp = str(dst_path) + ".cog.tmp"
+    rasterio.shutil.copy(src_path, tmp, driver="COG", compress="DEFLATE", predictor="2",
+                         blocksize=512, overviews="AUTO", resampling=overview_resampling.upper(),
+                         bigtiff="IF_SAFER", num_threads=threads)
+    os.replace(tmp, dst_path)
+
+
+def write_scaled_int(arr, path, transform, crs, dtype="int16", cog=False, overview_resampling="average",
+                     threads=1):
     """Single-band integer GeoTIFF of a float array (NaN = nodata), scaled
     by the largest of 10000/1000/100/10/1 that fits the dtype -- the same
     convention as mask_and_scale_rasters.scale_and_save_as_int_from_da():
-    nodata = dtype minimum, GDAL band scale = 1/scale (true = stored * scale),
-    LZW + predictor 2, tiled.
+    nodata = dtype minimum, GDAL band scale = 1/scale (true = stored * scale).
+
+    cog=False: tiled GeoTIFF, LZW + predictor 2 (per-tile and intermediate
+    files). cog=True: Cloud Optimized GeoTIFF, DEFLATE + predictor 2 with
+    overviews (see to_cog(); overview_resampling and threads are passed on).
 
     :return: the scale factor used, or None (nothing written) if arr has no
         valid pixels.
@@ -235,7 +254,13 @@ def write_scaled_int(arr, path, transform, crs, dtype="int16"):
         dst.write(out, 1)
         dst.scales = (1.0 / scale,)
         dst.offsets = (0.0,)
-    os.replace(tmp, path)
+    if cog:
+        try:
+            to_cog(tmp, path, overview_resampling, threads)
+        finally:
+            os.remove(tmp)
+    else:
+        os.replace(tmp, path)
     return scale
 
 
