@@ -9,6 +9,11 @@ to identify early leaf discoloration in Swiss European beech forests every five-
 ## Workflow
 
 ```
+Sentinel-2 L1C
+   │  FORCE Level 2          atmospheric/topographic correction, cloud masking, 30 km tiles (EPSG:3035)
+   ▼                         (data/force_param_files/level2_FORCE-v3.10.prm)
+   │  FORCE TSA              5 VI time series, QAI-screened, no interpolation
+   ▼                         (data/force_param_files/tsa_FORCE-v3.10.prm)
 FORCE level-3 TSS (raw Sentinel-2 VIs, one band per acquisition)
    │  transfer.py            copy the year's tiles from the network share
    ▼
@@ -40,6 +45,28 @@ Two runs of a season go through these steps:
   up to *d*. A third variant (**Retro_NRTminmax**) uses the all-data interpolation with the NRT run's per-date
   min/max, so only the interpolation differs from NRT.
 
+### FORCE preprocessing
+
+The input time series come from [FORCE](https://force-eo.readthedocs.io) v3.10. The two parameter files used are in
+`data/force_param_files/`:
+
+- **`level2_FORCE-v3.10.prm` (`force-level2`):** Sentinel-2 Level 1C to Level 2 bottom-of-atmosphere reflectance.
+  It includes atmospheric correction with AOD and water vapour, topographic correction with the Copernicus DEM,
+  BRDF and adjacency-effect correction, and cloud, cloud-shadow and snow masking in the QAI layer (cloud buffer
+  300 m, shadow 90 m, snow 30 m). Scenes and tiles with more than 80 % cloud cover are skipped. The output is
+  10 m, 30 × 30 km tiles in ETRS89 / LAEA Europe (EPSG:3035).
+- **`tsa_FORCE-v3.10.prm` (`force-higher-level`, TSA):** the time series of **NDVI, EVI, CIre, CCI and NDMI**
+  from Sentinel-2 A, B and C at 10 m (`SPECTRAL_ADJUST = TRUE`), for 1 January to 31 December of the season.
+  Observations flagged in the QAI as nodata, opaque cloud, cloud buffer, cirrus, cloud shadow, snow, subzero,
+  saturated or with no or poor illumination are removed. The output is the raw time series (`OUTPUT_TSS = TRUE`,
+  `*_<VI>_TSS.tif`, one band per acquisition). FORCE's own interpolation is off (`INTERPOLATE = NONE`): the 5-day
+  RBF interpolation is done here, in `interpolate.py`.
+
+To reproduce, adjust the machine-specific entries in both files: the directories (`DIR_*`, `FILE_QUEUE`), the DEM
+(`FILE_DEM`), the water-vapour database (`DIR_WVPLUT`), the co-registration base (`DIR_COREG_BASE`) and the
+tile allow-list (`FILE_TILE`, the Swiss tiles as in `data/CH_FORCE_Grids.csv`). Also set `DATE_RANGE` to the
+season. The TSA output folder (`level3_tss`) is what `force_dir` / `force_network_dir` in `config.yaml` point to.
+
 ### Model inputs
 
 The model uses five VIs: **NDVI, EVI, NDMI, CIRE (CIre), GRVI (CCI)**. For each pixel and date, each VI is scaled to
@@ -64,6 +91,7 @@ data/
   DiscoCH_2026_Mask.tif                               forest mask, EPSG:2056 (1 = keep)
   empirical_discoloration_model_pipeline_2025_6_2.pkl pre-trained sklearn pipeline (not tracked in git)
   example_extents/                                    example area shapefile (Herbetswil)
+  force_param_files/                                  FORCE v3.10 parameter files: Level 2 and TSA (see FORCE preprocessing)
 notebooks/
   DiscoCH_NRT.ipynb                near-real-time run: transfer → interpolate → model → mask → stats → clear sky → maps
   DiscoCH_Retro.ipynb              retrospective run of a finished season, same steps, all-data interpolation
@@ -219,7 +247,8 @@ with `utils.validate_cog_dir()` (rio-cogeo plus these settings); by hand: `rio c
 
 ## Data not in the repository
 
-- FORCE level-3 TSS time series (network share, copied locally with `transfer()`)
+- FORCE level-3 TSS time series (network share, copied locally with `transfer()`); produced with the parameter
+  files in `data/force_param_files/`
 - Validation data: the labelled stratified point sample (`point_validation_dir`) and the opportunistically mapped
   discolored polygons (`CH30km_Validation.gpkg`); ground-truth polygons for `validate.py` (`Mapping_2026.gpkg`)
 - District boundaries (`fgeolib_geolib_g1b20_LV95.shp`, field `bzname`) and biogeographic regions
