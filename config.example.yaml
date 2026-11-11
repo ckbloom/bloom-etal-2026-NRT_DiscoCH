@@ -20,6 +20,7 @@ example_extent: "data/example_extents/Herbetswil.shp"
 # --- Validation ---
 validation_gpkg:          # ground-truth polygons, Discolored = 1/0, one layer per survey (Mapping_2026.gpkg)
 validation_30km_gpkg:     # mapped discolored polygons for polygon recall (CH30km_Validation.gpkg)
+point_validation_dir:      # labelled stratified sample: labeling_points.gpkg, sample_key.csv, strata_summary.csv
 
 # --- Boundaries ---
 districts:                # fgeolib_geolib_g1b20_LV95.shp (fields bzname, ktnr)

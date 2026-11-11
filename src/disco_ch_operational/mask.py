@@ -44,6 +44,7 @@ Usage (notebook):
 """
 
 import os
+import re
 import glob
 import time
 
@@ -153,7 +154,7 @@ def mask_and_scale_file(in_path, out_path, keep=None, transform=None, crs=None,
 
 def mask_and_scale_dir(input_dir, mask_path, output_dir, pattern="*.tif", dtype="int16",
                        target_crs=TARGET_CRS, resampling=Resampling.bilinear,
-                       overwrite=False, threads=4, template_path=None):
+                       overwrite=False, threads=4, template_path=None, name_template=None):
     """Masks and scales every file matching `pattern` in input_dir into
     output_dir under the same name.
 
@@ -172,6 +173,9 @@ def mask_and_scale_dir(input_dir, mask_path, output_dir, pattern="*.tif", dtype=
     :param overwrite: redo every file. Otherwise a file is only (re)done if
         its output is missing or older than the input or the mask.
     :param threads: GDAL warp threads.
+    :param name_template: output file name with a {date} placeholder, filled
+        with the YYYY-MM-DD in the input name, e.g. "DiscoCH_NRT_{date}.tif"
+        (config.map_template(run)); None = the input's name.
     :return: {filename: status}, status "written (scale N)", "skipped",
         "no valid pixels" or "failed: <error>".
     """
@@ -202,6 +206,12 @@ def mask_and_scale_dir(input_dir, mask_path, output_dir, pattern="*.tif", dtype=
     status = {}
     for in_path in files:
         name = os.path.basename(in_path)
+        if name_template:
+            m = re.search(r"(\d{4}-\d{2}-\d{2})", name)
+            if not m:
+                print(f"  {name}: no date in the name, skipped")
+                continue
+            name = name_template.format(date=m.group(1))
         out_path = os.path.join(output_dir, name)
         if (not overwrite and os.path.exists(out_path)
                 and os.path.getmtime(out_path) >= max(os.path.getmtime(in_path), mask_time)):

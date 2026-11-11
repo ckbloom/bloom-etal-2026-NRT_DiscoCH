@@ -16,6 +16,7 @@ dependencies:
   - shapely>=2
   - geopandas
   - pyogrio
+  - rio-cogeo            # COG validation (utils.validate_cog)
   # plotting and basemaps
   - matplotlib
   - contextily

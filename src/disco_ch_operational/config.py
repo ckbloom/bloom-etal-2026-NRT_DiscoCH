@@ -21,6 +21,8 @@ Usage (notebook or script):
     cfg = load_config()
     force_directory = cfg["force_dir"]
     districts = cfg.require("districts")   # error if it isn't set
+
+    dirs = run_dirs(cfg["output_dir"], 2026, "nrt")   # output folders of one run
 """
 
 import os
@@ -58,6 +60,70 @@ def _resolve(value):
     if not path.is_absolute() and not value.strip().startswith(("\\\\", "//")):
         path = ROOT / path
     return str(path)
+
+
+# ---------------------------------------------------------------------
+# Output folders
+# ---------------------------------------------------------------------
+
+RUNS = ("nrt", "retro", "retro_nrtminmax")
+COMPARISON = "nrt_vs_retro"
+
+# File names of the final maps (masked/, unclipped/): DiscoCH_<RUN>_<YYYY-MM-DD>.tif,
+# e.g. DiscoCH_NRT_2026-08-14.tif. The model's own per-tile files and mosaics keep
+# Disco_Proba_<date>.tif. Readers find maps by their date (MAP_GLOB), so either works.
+MAP_GLOB = "*_????-??-??.tif"
+
+
+def map_template(run):
+    """Output name template of a run's final maps, for mask_and_scale_dir(name_template=...):
+    "DiscoCH_<RUN>_{date}.tif" (run upper-cased, e.g. NRT, RETRO, RETRO_NRTMINMAX)."""
+    return f"DiscoCH_{run.upper()}_{{date}}.tif"
+
+
+def map_name(run, d):
+    """File name of a run's final map of date d (date or 'YYYY-MM-DD')."""
+    return map_template(run).format(date=str(d))
+
+
+def run_dirs(output_dir, year, run):
+    """The output folders of one run of a season, shared by the notebooks:
+
+        <output_dir>/DiscoCH/<year>/<run>/
+            interpolated/   5-day RBF series per tile (*_TSS_TSI.tif)
+            model/          per-tile probabilities, min/max cache, logs, mosaic/
+            masked/         DiscoCH_<RUN>_<date>.tif on the forest mask (EPSG:2056), COG
+            unclipped/      the same without the forest mask (same grid and scaling), COG
+            clear_sky/      cumulative clear-sky counts (tiles/, masked/)
+            statistics/     tables and time-series plots
+            maps/           hexagon maps and date grids
+
+    run: "nrt" (near real time, DiscoCH_NRT.ipynb), "retro" (all-data
+    interpolation, own stepwise min/max, DiscoCH_Retro.ipynb) or
+    "retro_nrtminmax" (all-data interpolation with the NRT run's min/max,
+    DiscoCH_Retro_NRTminmax.ipynb; it shares retro's interpolated/), or
+    COMPARISON for NRT_vs_Retro.ipynb (validation/, statistics/, figures/).
+    """
+    if run not in RUNS + (COMPARISON,):
+        raise ValueError(f"run must be one of {RUNS + (COMPARISON,)}, got {run!r}")
+    season = os.path.join(output_dir, "DiscoCH", str(year))
+    base = os.path.join(season, run)
+    if run == COMPARISON:
+        names = ("validation", "statistics", "figures")
+        return {"root": base, **{n: os.path.join(base, n) for n in names}}
+    interpolated_run = "retro" if run == "retro_nrtminmax" else run
+    model = os.path.join(base, "model")
+    return {
+        "root": base,
+        "interpolated": os.path.join(season, interpolated_run, "interpolated"),
+        "model": model,
+        "mosaic": os.path.join(model, "mosaic"),
+        "masked": os.path.join(base, "masked"),
+        "unclipped": os.path.join(base, "unclipped"),
+        "clear_sky": os.path.join(base, "clear_sky"),
+        "statistics": os.path.join(base, "statistics"),
+        "maps": os.path.join(base, "maps"),
+    }
 
 
 def load_config(path=None):

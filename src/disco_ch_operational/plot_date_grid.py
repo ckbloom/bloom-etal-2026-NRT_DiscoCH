@@ -30,8 +30,9 @@ from pathlib import Path
 
 import numpy as np
 
-OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "output" / "DiscoCH_rbf_10_20_30"
-DATASETS = {"nrt": "{year}/masked", "retrospective": "{year}_full_data/masked"}
+OUTPUT_ROOT = Path(__file__).resolve().parents[2] / "output" / "DiscoCH"   # config.run_dirs() layout
+DATASETS = {"nrt": "{year}/nrt/masked", "retro": "{year}/retro/masked",
+            "retrospective": "{year}/retro/masked", "retro_nrtminmax": "{year}/retro_nrtminmax/masked"}
 WMS_URL = "https://wms.geo.admin.ch/"
 WMS_LAYER = "ch.swisstopo.landeskarte-grau-10"
 CRS = "EPSG:2056"
@@ -79,9 +80,10 @@ def fetch_basemap(bounds, width=1600, layer=WMS_LAYER, url=WMS_URL, timeout=120)
     return np.asarray(Image.open(io.BytesIO(r.content)).convert("RGBA"))
 
 
-def list_dates(mosaic_dir, year=None, months=None, pattern=r"Disco_Proba_(\d{4}-\d{2}-\d{2})\.tif$"):
-    """{date string: path} of the mosaics in mosaic_dir, optionally of one year
-    and some months."""
+def list_dates(mosaic_dir, year=None, months=None, pattern=r"_(\d{4}-\d{2}-\d{2})\.tif$"):
+    """{date string: path} of the maps (<name>_<YYYY-MM-DD>.tif, e.g.
+    DiscoCH_NRT_2026-08-14.tif) in mosaic_dir, optionally of one year and
+    some months."""
     out = {}
     for f in sorted(os.listdir(mosaic_dir)):
         m = re.search(pattern, f)
@@ -121,8 +123,9 @@ def plot_date_grid(dataset="nrt", extent=None, year=2026, months=(6, 7, 8, 9), a
                    title=None, font_scale=1.0, output=None, show=True):
     """Grid of probability maps: one column per month, one row per date in it.
 
-    :param dataset: "nrt" (near real time, <year>/masked) or "retrospective"
-        (all data, <year>_full_data/masked) under output_root; ignored if
+    :param dataset: "nrt" (near real time, <year>/nrt/masked), "retro" (all
+        data, <year>/retro/masked) or "retro_nrtminmax" under output_root
+        (output/DiscoCH, see config.run_dirs()); ignored if
         mosaic_dir is given.
     :param extent: shapefile path, GeoDataFrame or (xmin, ymin, xmax, ymax)
         in EPSG:2056 -- only places the maps, nothing is clipped. None = the
@@ -147,7 +150,7 @@ def plot_date_grid(dataset="nrt", extent=None, year=2026, months=(6, 7, 8, 9), a
     mosaic_dir = mosaic_dir or os.path.join(output_root, DATASETS[dataset].format(year=year))
     dates = list_dates(mosaic_dir, year, months)
     if not dates:
-        raise FileNotFoundError(f"no Disco_Proba_<date>.tif of {year}, months {months} in {mosaic_dir}")
+        raise FileNotFoundError(f"no <name>_<date>.tif of {year}, months {months} in {mosaic_dir}")
     if extent is None:
         import rasterio
         with rasterio.open(next(iter(dates.values()))) as src:
@@ -199,7 +202,8 @@ def plot_date_grid(dataset="nrt", extent=None, year=2026, months=(6, 7, 8, 9), a
                     ha="left", va="top", fontsize=18 * fs,
                     bbox=dict(facecolor="white", edgecolor="none", alpha=0.8, pad=2))
 
-    label = {"nrt": "near real time", "retrospective": "retrospective (all data)"}.get(dataset, dataset)
+    label = {"nrt": "near real time", "retro": "retrospective (all data)",
+             "retrospective": "retrospective (all data)"}.get(dataset, dataset)
     top = 1 - 1.4 * fs / fig.get_figheight()  # room for the title above the month headers
     fig.suptitle(title or f"Discoloration probability {year}, {label}", fontsize=26 * fs,
                  y=1 - 0.2 / fig.get_figheight(), va="top")
@@ -233,5 +237,5 @@ if __name__ == "__main__":
         plot_date_grid(dataset=dataset,
                        extent=districts[districts["ktnr"] == 26],  # or a shapefile path
                        alpha=0.6, min_proba=0.1,
-                       output=OUTPUT_ROOT / "2026" / "date_grids" / f"date_grid_jura_{dataset}.png",
+                       output=OUTPUT_ROOT / "2026" / dataset / "maps" / f"date_grid_jura_{dataset}.png",
                        show=False)

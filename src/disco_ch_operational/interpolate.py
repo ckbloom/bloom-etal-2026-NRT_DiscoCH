@@ -48,7 +48,7 @@ import os
 import time
 import math
 import contextlib
-from datetime import timedelta
+from datetime import date, timedelta
 from concurrent.futures import ProcessPoolExecutor, as_completed
 
 import numpy as np
@@ -358,6 +358,46 @@ def _run_job(tss_path, out_path, kwargs):
 # All tiles
 # ---------------------------------------------------------------------
 
+def check_data_currency(tss_dir, year, as_of=None, lag_days=DEFAULT_LAG_DAYS, vi_token="EVI",
+                        tss_pattern=DEFAULT_TSS_PATTERN, tiles_csv=None, tiles_column="Tile_ID"):
+    """Newest acquisition in the raw tiles (the EVI file of every tile), to
+    see whether the data on disk are current before a near-real-time run.
+
+    A date d is interpolated (and then frozen) once d + lag_days <= as_of;
+    if the newest acquisition is older than as_of - lag_days, the newest
+    dates are produced without data that may still arrive, so a warning is
+    printed (they are not redone later).
+
+    :return: {tile_id: newest acquisition date}
+    """
+    newest = {}
+    for tile_dir in discover_tile_dirs(tss_dir, tiles_csv, tiles_column):
+        tile_id = os.path.basename(tile_dir)
+        try:
+            dates = band_dates(find_vi_file(tile_dir, vi_token, year, tss_pattern))
+        except (FileNotFoundError, ValueError):
+            continue
+        if dates:
+            newest[tile_id] = max(dates)
+    if not newest:
+        print(f"No {vi_token} acquisitions for {year} under {tss_dir}")
+        return newest
+    latest, oldest = max(newest.values()), min(newest.values())
+    print(f"Newest acquisition: {latest} (oldest tile's newest: {oldest}, {len(newest)} tiles)")
+    as_of = as_date(as_of)
+    if as_of is not None:
+        if as_of > date.today():
+            raise ValueError(f"as_of {as_of} is in the future (today is {date.today()})")
+        cutoff = as_of - timedelta(days=lag_days)
+        print(f"Dates up to {cutoff} can be produced (as_of {as_of} - {lag_days} days)")
+        behind = sorted(t for t, d in newest.items() if d < cutoff)
+        if behind:
+            print(f"WARNING: {len(behind)} tile(s) have no acquisition after {cutoff} "
+                  f"(e.g. {', '.join(behind[:5])}); if data are still to arrive on the share, "
+                  f"the newest dates are interpolated without them and stay that way.")
+    return newest
+
+
 def interpolate_tiles(tss_dir, out_dir, vi_keys, date_range, as_of, lag_days=DEFAULT_LAG_DAYS,
                       int_day=5, doy_range=(1, 365), rbf_sigma=(10, 20, 30), rbf_cutoff=0.95,
                       despike=False, above_noise=3.0, below_noise=1.0,
@@ -398,6 +438,9 @@ def interpolate_tiles(tss_dir, out_dir, vi_keys, date_range, as_of, lag_days=DEF
     """
     year = year or date_range[0].year
     call_params = dict(locals())
+    if as_date(as_of) is not None and as_date(as_of) > date.today():
+        raise ValueError(f"as_of {as_of} is in the future (today is {date.today()}): dates would be "
+                         f"frozen before their data exist")
 
     tile_dirs = discover_tile_dirs(tss_dir, tiles_csv, tiles_column, tiles_csv_mode)
     print(f"Found {len(tile_dirs)} tile(s) under {tss_dir}")

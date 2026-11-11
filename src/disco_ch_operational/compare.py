@@ -16,6 +16,9 @@ common year 2000 (a leap year, so 29 Feb is safe) to line the seasons up.
   - layout="panels": one panel per region, with the years in the same
     colours in every panel -- easier to read than an overlay of many
     districts.
+  - layout="summary": (A) all of Switzerland on top, (B) one panel per
+    region below in the region's colour, the year shown by line style --
+    the layout of clear_sky.plot_clear_sky().
 
 Replaces plot_discoloration_comparison() of plot_discoloration_timeseries.py.
 Differences:
@@ -39,6 +42,11 @@ Usage (notebook):
     # mosaics with the same zones):
     plot_year_comparison({...}, zones=districts, zone_field="bzname",
                          regions=["Bezirk Aarau", "Bezirk Baden"], layout="panels")
+
+    # National + biogeographic regions:
+    plot_year_comparison({...}, zones=biogeo_regions, zone_field="DERegionNa",
+                         region_names=BIOGEO_NAMES_EN, region_colors=BIOGEO_COLORS,
+                         layout="summary", linestyles={"2018": "--", "2026": "-"})
 """
 
 import os
@@ -90,6 +98,98 @@ def rc_params(font_scale=1.4):
     }
 
 
+A4_PORTRAIT = (8.27, 11.69)   # inches
+
+
+def national_region_figure(regions, ncols=3, figsize=None, top_ratio=1.4):
+    """Figure with (A) one wide panel on top (the national total) and (B)
+    one panel per region below, ncols per row, the region panels sharing
+    the y axis and every panel the x axis.
+
+    :param figsize: (width, height) in inches, e.g. A4_PORTRAIT; None =
+        6.5 in per column and 4.6 in per row of regions.
+    :param top_ratio: height of panel A relative to one row of region panels.
+    :return: (fig, ax_a, axes_b, ncols_used)
+    """
+    import matplotlib.pyplot as plt
+
+    nrows = -(-len(regions) // ncols) if regions else 0
+    ncols_used = min(ncols, len(regions)) if regions else 1
+    fig = plt.figure(figsize=figsize or (6.5 * max(ncols_used, 2), 6.5 + 4.6 * nrows))
+    gs = fig.add_gridspec(1 + nrows, ncols_used, height_ratios=[top_ratio] + [1] * nrows)
+    ax_a = fig.add_subplot(gs[0, :])
+    ax_a.set_title("A", loc="left", fontweight="bold")
+    ax_a.set_title("Switzerland")
+    axes_b = []
+    for i, r in enumerate(regions):
+        ax = fig.add_subplot(gs[1 + i // ncols_used, i % ncols_used], sharex=ax_a,
+                             sharey=axes_b[0] if axes_b else None)
+        ax.set_title(r)
+        axes_b.append(ax)
+    if axes_b:
+        axes_b[0].set_title("B", loc="left", fontweight="bold")
+    return fig, ax_a, axes_b, ncols_used
+
+
+def style_season_axes(axes, guides=True, percent=False, bottom_only=None):
+    """Month/day x axis (major ticks at month starts, minor on the 15th,
+    rotated labels), y from 0, light grid. bottom_only: (axes, ncols) of a
+    panel grid whose x labels are shown only on the bottom panel of each
+    column."""
+    import matplotlib.dates as mdates
+    import matplotlib.ticker as mtick
+
+    for ax in axes:
+        ax.xaxis.set_major_locator(mdates.MonthLocator())
+        ax.xaxis.set_minor_locator(mdates.MonthLocator(bymonthday=15))
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
+        if percent:
+            ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0, decimals=0))
+        ax.set_ylim(bottom=0)
+        ax.grid(axis="y", linestyle="--", alpha=0.3)
+        if guides:
+            ax.grid(axis="x", which="major", color="0.8", linewidth=0.8)
+            ax.grid(axis="x", which="minor", color="0.9", linewidth=0.6)
+            ax.set_axisbelow(True)
+        ax.tick_params(axis="x", labelbottom=True)
+        for t in ax.get_xticklabels():
+            t.set_rotation(45)
+            t.set_ha("right")
+    if bottom_only:
+        grid, ncols = bottom_only
+        for i, ax in enumerate(grid):
+            if i + ncols < len(grid):
+                ax.tick_params(axis="x", labelbottom=False)
+
+
+def _plot_summary(data, labels, regions, value, region_color, year_style, ylabel, heading, ncols,
+                  guides, is_prop, figsize=A4_PORTRAIT, top_ratio=1.8):
+    """layout="summary" of plot_year_comparison(): (A) "All" in black, (B)
+    one panel per region in its colour; the line style is the dataset."""
+    import matplotlib.pyplot as plt
+    from matplotlib.lines import Line2D
+
+    zones = [r for r in regions if r != TOTAL]
+    fig, ax_a, axes_b, ncols_used = national_region_figure(zones, ncols, figsize, top_ratio)
+    for ax, r in [(ax_a, TOTAL)] + list(zip(axes_b, zones)):
+        for lab in labels:
+            d = data[(data.dataset == lab) & (data.zone == r)].sort_values("season_date")
+            if not d.empty:
+                ax.plot(d.season_date, d[value], color=region_color[r], linestyle=year_style[lab],
+                        linewidth=2.2)
+    ax_a.set_ylabel(ylabel)
+    for i, ax in enumerate(axes_b):
+        if i % ncols_used == 0:
+            ax.set_ylabel(ylabel)
+    style_season_axes([ax_a] + axes_b, guides, is_prop, (axes_b, ncols_used))
+    ax_a.legend([Line2D([], [], color="black", linestyle=year_style[lab], linewidth=2.2) for lab in labels],
+                labels, loc="upper left", handlelength=3)
+    fig.suptitle(heading)
+    fig.supxlabel("Date (month/day)")
+    fig.tight_layout()
+    return fig
+
+
 def collect_stats(datasets, threshold=4000, zones=None, zone_field="bzname", **stats_kw):
     """One long table (disco_statistics.discoloration_stats() columns plus
     "dataset") from {label: DataFrame | dict(mosaic_dir=..., pattern=...,
@@ -110,10 +210,10 @@ def collect_stats(datasets, threshold=4000, zones=None, zone_field="bzname", **s
 
 
 def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bzname", regions=None,
-                         layout="overlay", ncols=3, font_scale=1.4, value="proportion",
+                         layout="overlay", ncols=3, font_scale=None, value="proportion",
                          title=None, output_dir=None, output_name=None, show=True, linestyles=None,
                          colors=None, region_names=None, region_colors=None, guides=True,
-                         **stats_kw):
+                         figsize=A4_PORTRAIT, top_ratio=1.8, **stats_kw):
     """Plots `value` of each dataset against month/day.
 
     :param datasets: {label: DataFrame or dict(mosaic_dir, pattern, year,
@@ -140,9 +240,16 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
         the legend order. Other regions get tab10 colours.
     :param guides: light vertical guide lines at the month starts and the
         15th.
-    :param layout: "overlay" (one axis) or "panels" (one per region).
+    :param layout: "overlay" (one axis), "panels" (one per region) or
+        "summary": (A) "All" in black on top, (B) one panel per other
+        region below in its region colour, the dataset shown by line style
+        (pass e.g. linestyles={"2018": "--", "2026": "-"}).
     :param ncols: panels per row.
-    :param font_scale: text size relative to 12 pt.
+    :param font_scale: text size relative to 12 pt; None = 0.85 for
+        "summary" (A4), 1.4 otherwise.
+    :param figsize, top_ratio: layout="summary" only: figure size in inches
+        (default A4 portrait; None = sized by the number of panels) and the
+        height of panel A relative to one row of region panels.
     :param value: "proportion" (shown as %), "discolored_ha" or a
         statistics column.
     :param output_dir: saves <output_name>.png and the counts as
@@ -151,8 +258,6 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
     :return: the long table of every dataset.
     """
     import matplotlib.pyplot as plt
-    import matplotlib.dates as mdates
-    import matplotlib.ticker as mtick
 
     stats = collect_stats(datasets, threshold, zones, zone_field, **stats_kw)
     if region_names:
@@ -169,8 +274,8 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
                    if not ((stats.dataset == lab) & (stats.zone == r)).any()}
         if missing:
             print("  Not in the data (no line): " + ", ".join(f"{r} [{lab}]" for lab, r in sorted(missing)))
-    if layout not in ("overlay", "panels"):
-        raise ValueError(f"layout must be 'overlay' or 'panels', got {layout!r}")
+    if layout not in ("overlay", "panels", "summary"):
+        raise ValueError(f"layout must be 'overlay', 'panels' or 'summary', got {layout!r}")
 
     data = stats[stats.zone.isin(regions)].copy()
     data["season_date"] = data["date"].map(lambda d: d.replace(year=2000))
@@ -189,8 +294,17 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
     year_style = {lab: linestyles.get(lab, LINESTYLES[i % len(LINESTYLES)])
                   for i, lab in enumerate(labels)}
 
+    thr = f"threshold ≥ {threshold / 10000:g}" if is_prop else None
+    heading = title or ("Proportion of European beech forest discolored" if is_prop else ylabel)
+
+    if font_scale is None:
+        font_scale = 0.85 if layout == "summary" else 1.4
     with plt.rc_context(rc_params(font_scale)):
-        if layout == "panels" and len(regions) > 1:
+        if layout == "summary":
+            fig = _plot_summary(data, labels, regions, value, region_color, year_style, ylabel,
+                                heading + (f"\n({thr})" if thr else ""), ncols, guides, is_prop,
+                                figsize, top_ratio)
+        elif layout == "panels" and len(regions) > 1:
             ncols = min(ncols, len(regions))
             nrows = -(-len(regions) // ncols)
             fig, axes = plt.subplots(nrows, ncols, figsize=(6.5 * ncols, 4.8 * nrows),
@@ -202,66 +316,51 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
             fig, ax = plt.subplots(figsize=(13, 7))
             panels = {r: ax for r in regions}
 
-        for r, ax in panels.items():
-            for lab in labels:
-                d = data[(data.dataset == lab) & (data.zone == r)].sort_values("season_date")
-                if d.empty:
-                    continue
-                ls = year_style[lab]
-                if layout == "panels" or len(regions) == 1:
-                    kw = dict(color=year_color[lab], linestyle=ls, label=lab)
+        if layout != "summary":
+            for r, ax in panels.items():
+                for lab in labels:
+                    d = data[(data.dataset == lab) & (data.zone == r)].sort_values("season_date")
+                    if d.empty:
+                        continue
+                    ls = year_style[lab]
+                    if layout == "panels" or len(regions) == 1:
+                        kw = dict(color=year_color[lab], linestyle=ls, label=lab)
+                    else:
+                        kw = dict(color=region_color[r], linestyle=ls, label=f"{r} ({lab})")
+                    ax.plot(d.season_date, d[value], linewidth=2, **kw)
+                if layout == "panels" and len(regions) > 1:
+                    ax.set_title(r)
+
+            all_axes = list(dict.fromkeys(panels.values()))
+            style_season_axes(all_axes, guides, is_prop)
+
+            if len(all_axes) == 1:
+                ax = all_axes[0]
+                ax.set_title(heading + (f"\n({thr})" if thr else ""))
+                ax.set_xlabel("Date (month/day)")
+                ax.set_ylabel(ylabel)
+                if len(regions) > 1:
+                    # two untitled legends in the plot: colour = region, line style = dataset
+                    from matplotlib.lines import Line2D
+                    small = plt.rcParams["legend.fontsize"] * 0.85
+                    reg = ax.legend([Line2D([], [], color=region_color[r], linewidth=3) for r in regions],
+                                    regions, loc="upper left", fontsize=small)
+                    ax.add_artist(reg)
+                    # dataset legend just right of the region legend (curves are still low there)
+                    fig.canvas.draw()
+                    right = ax.transAxes.inverted().transform(reg.get_window_extent())[1, 0]
+                    ax.legend([Line2D([], [], color=year_color[lab], linewidth=2, linestyle=year_style[lab])
+                               for lab in labels],
+                              labels, loc="upper left", bbox_to_anchor=(right + 0.01, 1),
+                              fontsize=small, handlelength=3)
                 else:
-                    kw = dict(color=region_color[r], linestyle=ls, label=f"{r} ({lab})")
-                ax.plot(d.season_date, d[value], linewidth=2, **kw)
-            if layout == "panels" and len(regions) > 1:
-                ax.set_title(r)
-
-        all_axes = list(dict.fromkeys(panels.values()))
-        for ax in all_axes:
-            ax.xaxis.set_major_locator(mdates.MonthLocator())
-            ax.xaxis.set_minor_locator(mdates.MonthLocator(bymonthday=15))
-            ax.xaxis.set_major_formatter(mdates.DateFormatter("%b %d"))
-            if is_prop:
-                ax.yaxis.set_major_formatter(mtick.PercentFormatter(1.0, decimals=0))
-            ax.set_ylim(bottom=0)
-            ax.grid(axis="y", linestyle="--", alpha=0.3)
-            if guides:
-                ax.grid(axis="x", which="major", color="0.8", linewidth=0.8)
-                ax.grid(axis="x", which="minor", color="0.9", linewidth=0.6)
-                ax.set_axisbelow(True)
-            for lab in ax.get_xticklabels():
-                lab.set_rotation(45)
-                lab.set_ha("right")
-
-        thr = f"threshold ≥ {threshold / 10000:g}" if is_prop else None
-        heading = title or ("Proportion of European beech forest discolored" if is_prop else ylabel)
-        if len(all_axes) == 1:
-            ax = all_axes[0]
-            ax.set_title(heading + (f"\n({thr})" if thr else ""))
-            ax.set_xlabel("Date (month/day)")
-            ax.set_ylabel(ylabel)
-            if len(regions) > 1:
-                # two untitled legends in the plot: colour = region, line style = dataset
-                from matplotlib.lines import Line2D
-                small = plt.rcParams["legend.fontsize"] * 0.85
-                reg = ax.legend([Line2D([], [], color=region_color[r], linewidth=3) for r in regions],
-                                regions, loc="upper left", fontsize=small)
-                ax.add_artist(reg)
-                # dataset legend just right of the region legend (curves are still low there)
-                fig.canvas.draw()
-                right = ax.transAxes.inverted().transform(reg.get_window_extent())[1, 0]
-                ax.legend([Line2D([], [], color=year_color[lab], linewidth=2, linestyle=year_style[lab])
-                           for lab in labels],
-                          labels, loc="upper left", bbox_to_anchor=(right + 0.01, 1),
-                          fontsize=small, handlelength=3)
+                    ax.legend(loc="upper left")
             else:
-                ax.legend(loc="upper left")
-        else:
-            fig.suptitle(heading + (f" ({thr})" if thr else ""))
-            fig.supxlabel("Date (month/day)")
-            fig.supylabel(ylabel)
-            all_axes[0].legend(loc="upper left")
-        fig.tight_layout()
+                fig.suptitle(heading + (f" ({thr})" if thr else ""))
+                fig.supxlabel("Date (month/day)")
+                fig.supylabel(ylabel)
+                all_axes[0].legend(loc="upper left")
+            fig.tight_layout()
 
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)

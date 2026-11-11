@@ -1,8 +1,8 @@
 """
 disco_statistics.py
 
-Per-date discoloration statistics from a folder of Disco_Proba_<date>.tif
-mosaics: how much of the valid (non-nodata) area is at or above a
+Per-date discoloration statistics from a folder of dated maps (*_<YYYY-MM-DD>.tif)
+(e.g. the masked DiscoCH_<RUN>_<date>.tif): how much of the valid (non-nodata) area is at or above a
 threshold, over the whole mosaic and, optionally, per polygon of a zone
 layer (e.g. forest or political districts).
 
@@ -81,9 +81,33 @@ def _year_matches(d, year):
     return d.year in set(year)
 
 
-def list_mosaics(mosaic_dir, pattern="Disco_Proba_*.tif", year=None):
+MAP_GLOB = "*_????-??-??.tif"    # any <name>_<YYYY-MM-DD>.tif (DiscoCH_NRT_..., Disco_Proba_..., ...)
+
+
+def find_map(folder, name_or_date):
+    """Path of one map in folder: the file name itself (with or without
+    .tif) if it exists, otherwise the single *_<YYYY-MM-DD>.tif of the date
+    it contains -- so "Disco_Proba_2026-08-14", "2026-08-14" and
+    "DiscoCH_NRT_2026-08-14.tif" all find DiscoCH_NRT_2026-08-14.tif."""
+    name = str(name_or_date)
+    for cand in (name, name + ".tif"):
+        p = os.path.join(folder, cand)
+        if os.path.isfile(p):
+            return p
+    m = DATE_RE.search(name)
+    if not m:
+        raise FileNotFoundError(f"No {name} in {folder} (and no date in the name)")
+    hits = sorted(glob.glob(os.path.join(folder, f"*_{m.group(1)}.tif")))
+    if len(hits) != 1:
+        raise FileNotFoundError(f"{'No' if not hits else len(hits)} map(s) of {m.group(1)} in {folder}"
+                                + (f": {[os.path.basename(h) for h in hits]}" if hits else ""))
+    return hits[0]
+
+
+def list_mosaics(mosaic_dir, pattern=MAP_GLOB, year=None):
     """[(date, path)] of the files matching pattern whose name holds a
-    YYYY-MM-DD date (in `year` if given), sorted by date."""
+    YYYY-MM-DD date (in `year` if given), sorted by date. Two files of one
+    date (e.g. old and new names side by side) are an error."""
     paths = sorted(glob.glob(os.path.join(mosaic_dir, pattern)))
     if not paths:
         raise FileNotFoundError(f"No files matching {pattern!r} in {mosaic_dir}")
@@ -100,6 +124,10 @@ def list_mosaics(mosaic_dir, pattern="Disco_Proba_*.tif", year=None):
     if not out:
         raise FileNotFoundError(f"No dated {pattern!r} files in {mosaic_dir}"
                                 + (f" for {year}" if year is not None else ""))
+    dup = sorted({d for d, _ in out if sum(d == e for e, _ in out) > 1})
+    if dup:
+        raise ValueError(f"Several files of the same date in {mosaic_dir} ({[d.isoformat() for d in dup]}); "
+                         f"pass a narrower pattern (e.g. 'DiscoCH_NRT_*.tif') or remove the old files")
     return out
 
 
@@ -206,7 +234,7 @@ def _count_window(files, window, transform, threshold, nodata, shapes, tree, n_z
 
 
 def discoloration_stats(mosaic_dir, threshold=4000, zones=None, zone_field="bzname",
-                        pattern="Disco_Proba_*.tif", year=None, nodata=None,
+                        pattern=MAP_GLOB, year=None, nodata=None,
                         chunk_size=2048, max_workers=4):
     """Long DataFrame of discoloration per date and zone (see the module
     docstring for the definitions).
@@ -275,7 +303,7 @@ def wide_table(stats, value="proportion"):
 # ---------------------------------------------------------------------
 
 def summarize_discoloration(mosaic_dir, threshold=4000, zones=None, zone_field="bzname",
-                            pattern="Disco_Proba_*.tif", year=None, nodata=None,
+                            pattern=MAP_GLOB, year=None, nodata=None,
                             output_dir=None, label=None, chunk_size=2048, max_workers=4):
     """discoloration_stats(), printed as a date x zone proportion table and,
     with output_dir, saved there as discoloration_<label>_t<threshold>.csv

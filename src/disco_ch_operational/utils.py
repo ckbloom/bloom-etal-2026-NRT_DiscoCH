@@ -10,6 +10,7 @@ effects (no GDAL environment changes, no warning filters).
 """
 
 import os
+import math
 import re
 import csv
 import glob
@@ -211,18 +212,90 @@ def write_float(arr, path, transform, crs):
     os.replace(tmp, path)
 
 
+COG_BLOCKSIZE = 512          # tiles, as swissEO
+COG_MIN_OVERVIEW_FACTOR = 256   # overviews down to at least 1/256
+
+
+def cog_overview_count(width, height, blocksize=COG_BLOCKSIZE, min_factor=COG_MIN_OVERVIEW_FACTOR):
+    """Overview levels (factors 2, 4, ...) for a width x height raster: until
+    it fits one block (GDAL's AUTO) and at least down to 1/min_factor, but
+    never below 1 px."""
+    size = max(width, height)
+    auto = max(0, math.ceil(math.log2(size / blocksize))) if size > blocksize else 0
+    wanted = max(auto, int(round(math.log2(min_factor))))
+    return max(1, min(wanted, int(math.floor(math.log2(size)))))
+
+
 def to_cog(src_path, dst_path, overview_resampling="average", threads=1):
-    """Copies a GeoTIFF to a Cloud Optimized GeoTIFF: DEFLATE + predictor 2
-    (horizontal differencing, for integer data), 512 px blocks, internal
-    overviews (AUTO: halved until they fit one block) resampled with
-    overview_resampling ("average" for continuous data, "nearest" for
-    classes). Nodata, band scale/offset and tags carry over. Written to a
-    temporary file and swapped into place."""
+    """Copies a GeoTIFF to a Cloud Optimized GeoTIFF (GDAL COG driver):
+    one band per file, DEFLATE + predictor 2 (horizontal differencing, for
+    integer data), 512 x 512 tiles, internal overviews down to at least
+    1/256 (cog_overview_count) resampled with overview_resampling
+    ("average" for continuous data, "nearest" for classes). The source's
+    nodata is set before the overviews are built, so nodata does not leak
+    into them; nodata, band scale/offset and tags carry over. Written to a
+    temporary file and swapped into place. Check with validate_cog()."""
+    with rasterio.open(src_path) as src:
+        count = cog_overview_count(src.width, src.height)
     tmp = str(dst_path) + ".cog.tmp"
     rasterio.shutil.copy(src_path, tmp, driver="COG", compress="DEFLATE", predictor="2",
-                         blocksize=512, overviews="AUTO", resampling=overview_resampling.upper(),
-                         bigtiff="IF_SAFER", num_threads=threads)
+                         blocksize=COG_BLOCKSIZE, overviews="AUTO", overview_count=str(count),
+                         resampling=overview_resampling.upper(), bigtiff="IF_SAFER",
+                         num_threads=threads)
     os.replace(tmp, dst_path)
+
+
+def validate_cog(path, min_overview_factor=COG_MIN_OVERVIEW_FACTOR, quiet=False):
+    """Checks one file against the COG conventions: rio-cogeo's validation
+    (a real COG layout) plus 512 x 512 tiles, DEFLATE or LZW (no ZSTD /
+    LERC), predictor 2, one band, a nodata value and overviews down to
+    about 1/min_overview_factor (at least half that factor, as the last
+    level is limited by the raster size).
+
+    :return: (ok, [problems])
+    """
+    from rio_cogeo.cogeo import cog_validate
+    problems = []
+    valid, errors, warnings_ = cog_validate(str(path), quiet=True)
+    if not valid:
+        problems += [f"rio-cogeo: {e}" for e in errors]
+    problems += [f"rio-cogeo warning: {w}" for w in warnings_]
+    with rasterio.open(path) as src:
+        comp = (src.tags(ns="IMAGE_STRUCTURE").get("COMPRESSION") or "NONE").upper()
+        pred = src.tags(ns="IMAGE_STRUCTURE").get("PREDICTOR")
+        if src.count != 1:
+            problems.append(f"{src.count} bands (expected 1)")
+        if src.block_shapes[0] != (COG_BLOCKSIZE, COG_BLOCKSIZE):
+            problems.append(f"tiles {src.block_shapes[0]} (expected {COG_BLOCKSIZE} x {COG_BLOCKSIZE})")
+        if comp not in ("DEFLATE", "LZW"):
+            problems.append(f"compression {comp} (expected DEFLATE or LZW)")
+        if pred != "2":
+            problems.append(f"predictor {pred} (expected 2)")
+        if src.nodata is None:
+            problems.append("no nodata value")
+        ovr = src.overviews(1)
+        if not ovr:
+            problems.append("no overviews")
+        elif max(ovr) < min(min_overview_factor / 2, max(src.width, src.height)):
+            problems.append(f"overviews only down to 1/{max(ovr)} (expected about 1/{min_overview_factor})")
+    ok = not [p for p in problems if not p.startswith("rio-cogeo warning")]
+    if not quiet:
+        print(f"{'OK  ' if ok else 'FAIL'} {os.path.basename(path)}" + ("" if ok else f": {problems}"))
+    return ok, problems
+
+
+def validate_cog_dir(folder, pattern="*.tif", quiet_ok=True):
+    """validate_cog() for every matching file in folder; prints the
+    failures (and a summary) and returns {filename: problems} of those."""
+    files = sorted(glob.glob(os.path.join(folder, pattern)))
+    bad = {}
+    for f in files:
+        ok, problems = validate_cog(f, quiet=quiet_ok)
+        if not ok:
+            bad[os.path.basename(f)] = problems
+            print(f"FAIL {os.path.basename(f)}: {problems}")
+    print(f"COG check of {folder}: {len(files) - len(bad)} of {len(files)} valid")
+    return bad
 
 
 def write_scaled_int(arr, path, transform, crs, dtype="int16", cog=False, overview_resampling="average",

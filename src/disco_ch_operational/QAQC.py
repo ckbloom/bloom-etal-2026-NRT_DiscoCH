@@ -71,14 +71,23 @@ Requires: numpy, pandas, rasterio (geopandas to read shapefiles, matplotlib for 
 """
 from pathlib import Path
 
+import re
 import numpy as np
 import pandas as pd
 import rasterio
 from rasterio.transform import xy
 from rasterio.warp import transform as warp_transform
 
+from src.disco_ch_operational.disco_statistics import find_map
+
 DEFAULT_EDGES = [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]
 
+
+
+def file_label(label):
+    """A map label as a file/folder name: characters not allowed in Windows
+    file names (/ \\ : * ? " < > |) become "-", e.g. "Retro (NRT min-max)"."""
+    return re.sub(r'[\\/:*?"<>|]', "-", str(label)).strip()
 
 def _get_edges(vals, method, nstrata, edges):
     if method == "fixed":
@@ -225,8 +234,9 @@ def rescore_key(key, raster_dir, outfile=None):
     e.g. a different mask) get probability NaN and are dropped by qaqc_assess().
 
     :param key: sample_key.csv (or its DataFrame) from qaqc_sample().
-    :param raster_dir: folder with one <date>.tif per date of the key
-        (e.g. the new model's masked/Disco_Proba_2026-08-14.tif); band scale applied.
+    :param raster_dir: folder with one map per date of the key, found by the
+        date in the key's map name (e.g. key date "Disco_Proba_2026-08-14" ->
+        masked/DiscoCH_NRT_2026-08-14.tif); band scale applied.
     :param outfile: optional .csv to write the new key to.
     :return: key DataFrame; the old value is kept as probability_sampled.
     """
@@ -234,9 +244,10 @@ def rescore_key(key, raster_dir, outfile=None):
     key["probability_sampled"] = key["probability"]
     key["probability"] = np.nan
     for date, g in key.groupby("date"):
-        path = Path(raster_dir) / f"{date}.tif"
-        if not path.exists():
-            print(f"{date}: {path} missing; its {len(g)} points get no probability")
+        try:
+            path = Path(find_map(raster_dir, date))
+        except FileNotFoundError as e:
+            print(f"{date}: {e}; its {len(g)} points get no probability")
             continue
         with rasterio.open(path) as src:
             xs, ys = g["x"].to_numpy(), g["y"].to_numpy()
@@ -1124,13 +1135,122 @@ def polygon_recall(polygons, raster, thresholds=(0.3, 0.5), layer=None, label_co
     if outdir is not None:
         o = Path(outdir)
         o.mkdir(parents=True, exist_ok=True)
-        stem = f"{dataset}_{rp.stem}"
+        stem = f"{file_label(dataset)}_{rp.stem}"
         recall.to_csv(o / f"polygon_recall_{stem}.csv", index=False)
         if by_region is not None:
             by_region.assign(**source).to_csv(o / f"polygon_recall_by_{region_col}_{stem}.csv")
         per.to_csv(o / f"polygon_recall_polygons_{stem}.csv", index=False)
         print(f"wrote polygon_recall*_{stem}.csv to {o}")
     return recall, per
+
+
+# ---------------------------------------------------------------------------
+# Paper tables: several maps scored with the same validation data
+# ---------------------------------------------------------------------------
+
+TABLE_METRICS = ("overall_accuracy", "precision (UA disc.)", "recall (PA disc.)", "f1",
+                 "balanced_accuracy", "mapped_area_ha", "estimated_area_ha")
+
+
+def point_validation_table(maps, labels, key, summary=None, threshold=0.4, min_confidence=(1, 2),
+                           layer="all", combine_dates=True, metrics=TABLE_METRICS, outdir=None,
+                           show=False):
+    """Point validation of several maps with one labelled stratified sample:
+    each map's probabilities are read at the sample points (rescore_key(),
+    so the design -- strata, N_h -- stays that of the sampled map, Stehman
+    2014) and scored at `threshold` with the area-weighted (stratified)
+    estimators, for all points of each min_confidence.
+
+    :param maps: {label: folder of masked Disco_Proba_<date>.tif}, e.g.
+        {"NRT": nrt_masked, "Retro": retro_masked}.
+    :param labels, key, summary: labeling_points.gpkg, sample_key.csv,
+        strata_summary.csv of the sample.
+    :param min_confidence: one table block per value (None = every label).
+    :param layer, combine_dates: as in qaqc_assess() ("all" layers = every
+        labelled date; True adds the dates combined as "all_dates").
+    :param outdir: also writes, per map, the rescored key and the full
+        qaqc_assess() outputs to outdir/<label>/, and the tables as
+        point_validation_t<threshold>.csv (long) and ..._table.csv (wide:
+        "estimate ± 1.96 SE" per map).
+    :return: (long DataFrame: map, min_confidence, date, metric, weighted,
+        weighted_se, ci95_lo, ci95_hi, raw, n; wide formatted table)
+    """
+    out = Path(outdir) if outdir is not None else None
+    rows = []
+    for name, masked_dir in maps.items():
+        print(f"\n=== {name}: {masked_dir}")
+        sub = out / file_label(name) if out is not None else None
+        k = rescore_key(key, masked_dir, outfile=sub / "sample_key.csv" if sub is not None else None)
+        for mc in min_confidence:
+            if sub is not None:
+                qaqc_assess(labels, k, summary, layer=layer, min_confidence=mc, threshold=threshold,
+                            combine_dates=combine_dates, outdir=sub, show=show)
+            df, strata = _labelled_sample(labels, k, "label", summary, layer, min_confidence=mc)
+            if combine_dates:
+                df, strata = _combine_dates(df, strata)
+            met = confusion_by_confidence(df, strata, threshold)["metrics"]
+            met = met[(met["subset"] == "all") & met["metric"].isin(metrics)]
+            rows.append(met.assign(map=str(name), min_confidence=mc))
+    cols = ["map", "min_confidence", "date", "metric", "weighted", "weighted_se", "ci95_lo", "ci95_hi",
+            "raw", "n"]
+    long = pd.concat(rows, ignore_index=True)[cols]
+    order = {m: i for i, m in enumerate(metrics)}
+    long = long.sort_values(["min_confidence", "date", "metric", "map"],
+                            key=lambda s: s.map(order) if s.name == "metric" else s).reset_index(drop=True)
+
+    def fmt(r):
+        if "area" in r["metric"]:
+            return f"{r['weighted']:,.0f}" + (f" ± {1.96 * r['weighted_se']:,.0f}" if pd.notna(r["weighted_se"]) else "")
+        return f"{r['weighted']:.3f}" + (f" ± {1.96 * r['weighted_se']:.3f}" if pd.notna(r["weighted_se"]) else "")
+
+    wide = (long.assign(value=long.apply(fmt, axis=1))
+            .pivot_table(index=["min_confidence", "date", "metric"], columns="map", values="value",
+                         aggfunc="first", sort=False)
+            .reindex(columns=[str(m) for m in maps]))
+    print(f"\nPoint validation, threshold {threshold} (area-weighted estimate ± 1.96 SE):")
+    print(wide.to_string())
+    if out is not None:
+        out.mkdir(parents=True, exist_ok=True)
+        stem = f"point_validation_t{threshold:g}"
+        long.to_csv(out / f"{stem}.csv", index=False)
+        wide.to_csv(out / f"{stem}_table.csv", encoding="utf-8-sig")
+        print(f"wrote {stem}.csv and {stem}_table.csv to {out}")
+    return long, wide
+
+
+def recall_table(maps, polygons, raster_name, thresholds=(0.4,), layer=None, regions=None,
+                 region_col="ktnr", outdir=None):
+    """polygon_recall() of several maps against the same opportunistically
+    mapped discoloured polygons.
+
+    :param maps: {label: folder of masked rasters}.
+    :param raster_name: the map in each folder, by file name or date, e.g.
+        "2026-08-14" for the Planet mapping of 14 Aug 2026 (finds
+        DiscoCH_NRT_2026-08-14.tif, DiscoCH_RETRO_2026-08-14.tif, ...).
+    :param regions, region_col: optional areas to break the recall down by
+        (e.g. the districts with canton number ktnr).
+    :param outdir: polygon_recall() files per map (named by its label) and
+        polygon_recall_table_<raster>.csv (one row per map and threshold,
+        region "all").
+    :return: (overall DataFrame, full recall DataFrame of every region)
+    """
+    tabs = []
+    for name, masked_dir in maps.items():
+        print(f"\n=== {name}")
+        rec, _ = polygon_recall(polygons, find_map(masked_dir, raster_name), thresholds, layer=layer,
+                                regions=regions, region_col=region_col, outdir=outdir, dataset=str(name))
+        tabs.append(rec.assign(map=str(name)))
+    full = pd.concat(tabs, ignore_index=True)
+    cols = ["map", "threshold", "n_mapped", "n_no_valid_pixel", "n_polygons", "n_pixels",
+            "polygon_recall_mean", "polygon_recall_any", "pixel_recall", "pixel_recall_poly"]
+    overall = full[full["region"] == "all"][cols].reset_index(drop=True)
+    print(f"\nOpportunistic mapping recall ({raster_name}):")
+    print(overall.to_string(index=False, float_format=lambda v: f"{v:.3f}"))
+    if outdir is not None:
+        o = Path(outdir)
+        o.mkdir(parents=True, exist_ok=True)
+        overall.to_csv(o / f"polygon_recall_table_{Path(str(raster_name)).stem}.csv", index=False)
+    return overall, full
 
 
 if __name__ == '__main__':
