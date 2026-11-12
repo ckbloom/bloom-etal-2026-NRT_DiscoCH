@@ -24,8 +24,9 @@ Replaces plot_discoloration_comparison() of plot_discoloration_timeseries.py.
 Differences:
   - any number of years, and regions from a zone layer;
   - larger text (font_scale);
-  - the threshold must be the same for every dataset counted here; tables
-    passed in keep the threshold they were counted with;
+  - one threshold for every dataset counted here, or per dataset with a
+    "threshold" key in its dict (e.g. a lower one for a smoother series);
+    tables passed in keep the threshold they were counted with;
   - the per-date hectare CSV is the long table of disco_statistics.py, written
     only with output_dir.
 
@@ -163,47 +164,69 @@ def style_season_axes(axes, guides=True, percent=False, bottom_only=None):
 
 
 def _plot_summary(data, labels, regions, value, region_color, year_style, ylabel, heading, ncols,
-                  guides, is_prop, figsize=A4_PORTRAIT, top_ratio=1.8):
-    """layout="summary" of plot_year_comparison(): (A) "All" in black, (B)
-    one panel per region in its colour; the line style is the dataset."""
+                  guides, is_prop, figsize=A4_PORTRAIT, top_ratio=1.8, national_color=None,
+                  national_style=None):
+    """layout="summary" of plot_year_comparison(): (A) "All" in black, or
+    with national_color / national_style ({label: ...}) each dataset in its
+    own colour and line style; (B) one panel per region in its colour, the
+    line style is the dataset. heading None = no figure title."""
     import matplotlib.pyplot as plt
     from matplotlib.lines import Line2D
 
+    a_color = {lab: (national_color or {}).get(lab, "black") for lab in labels}
+    a_style = {lab: (national_style or {}).get(lab, year_style[lab]) for lab in labels}
     zones = [r for r in regions if r != TOTAL]
     fig, ax_a, axes_b, ncols_used = national_region_figure(zones, ncols, figsize, top_ratio)
     for ax, r in [(ax_a, TOTAL)] + list(zip(axes_b, zones)):
         for lab in labels:
             d = data[(data.dataset == lab) & (data.zone == r)].sort_values("season_date")
-            if not d.empty:
-                ax.plot(d.season_date, d[value], color=region_color[r], linestyle=year_style[lab],
-                        linewidth=2.2)
+            if d.empty:
+                continue
+            color, ls = (a_color[lab], a_style[lab]) if r == TOTAL else (region_color[r], year_style[lab])
+            ax.plot(d.season_date, d[value], color=color, linestyle=ls, linewidth=2.2)
     ax_a.set_ylabel(ylabel)
     for i, ax in enumerate(axes_b):
         if i % ncols_used == 0:
             ax.set_ylabel(ylabel)
     style_season_axes([ax_a] + axes_b, guides, is_prop, (axes_b, ncols_used))
-    ax_a.legend([Line2D([], [], color="black", linestyle=year_style[lab], linewidth=2.2) for lab in labels],
-                labels, loc="upper left", handlelength=3)
-    fig.suptitle(heading)
-    fig.supxlabel("Date (month/day)")
+    handle = lambda c, ls: Line2D([], [], color=c, linestyle=ls, linewidth=2.2)
+    ax_a.legend([handle(a_color[lab], a_style[lab]) for lab in labels], labels,
+                loc="upper left", handlelength=3)
+    b_key = axes_b and any(a_style[lab] != year_style[lab] for lab in labels)
+    if heading:
+        fig.suptitle(heading)
+    xlabel = fig.supxlabel("Date (month/day)")
     fig.tight_layout()
+    if b_key:
+        # panel B draws the datasets in other line styles than A: their own key, directly
+        # under the date label (below the figure's edge; saved with bbox_inches="tight")
+        fig.canvas.draw()
+        bottom = xlabel.get_window_extent().transformed(fig.transFigure.inverted()).y0
+        fig.legend([handle("black", year_style[lab]) for lab in labels], labels,
+                   loc="upper center", bbox_to_anchor=(0.5, bottom), ncol=len(labels),
+                   handlelength=3, frameon=False)
     return fig
 
 
 def collect_stats(datasets, threshold=4000, zones=None, zone_field="bzname", **stats_kw):
     """One long table (disco_statistics.discoloration_stats() columns plus
-    "dataset") from {label: DataFrame | dict(mosaic_dir=..., pattern=...,
-    year=..., nodata=...)}; dict entries are counted with `threshold` and
-    `zones`, plus stats_kw (chunk_size, max_workers)."""
+    "dataset" and "threshold") from {label: DataFrame | dict(mosaic_dir=...,
+    pattern=..., year=..., nodata=..., threshold=...)}; dict entries are
+    counted with their own "threshold" if given, else `threshold`, and with
+    `zones`, plus stats_kw (chunk_size, max_workers). A DataFrame keeps its
+    "threshold" column if it has one, else the threshold is unknown (NaN)."""
     tables = []
     for label, src in datasets.items():
         if isinstance(src, pd.DataFrame):
             df = src.copy()
+            thr = df["threshold"] if "threshold" in df else np.nan
         else:
             src = dict(src) if isinstance(src, dict) else {"mosaic_dir": src}
-            df = discoloration_stats(threshold=threshold, zones=zones, zone_field=zone_field,
+            thr = src.pop("threshold", threshold)
+            df = discoloration_stats(threshold=thr, zones=zones, zone_field=zone_field,
                                      **src, **stats_kw)
         df["date"] = pd.to_datetime(df["date"])
+        df["threshold"] = thr
         df.insert(0, "dataset", str(label))
         tables.append(df)
     return pd.concat(tables, ignore_index=True)
@@ -213,14 +236,17 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
                          layout="overlay", ncols=3, font_scale=None, value="proportion",
                          title=None, output_dir=None, output_name=None, show=True, linestyles=None,
                          colors=None, region_names=None, region_colors=None, guides=True,
-                         figsize=A4_PORTRAIT, top_ratio=1.8, **stats_kw):
+                         figsize=A4_PORTRAIT, top_ratio=1.8, national_colors=None,
+                         national_linestyles=None, **stats_kw):
     """Plots `value` of each dataset against month/day.
 
     :param datasets: {label: DataFrame or dict(mosaic_dir, pattern, year,
         nodata) or mosaic_dir} -- see collect_stats(). Labels are the
         legend entries, e.g. "2018".
     :param threshold: for the datasets counted here (stored value, 4000 =
-        40 %).
+        40 %); a dataset dict's own "threshold" key overrides it, e.g.
+        {"Retro": dict(mosaic_dir=..., year=2026, threshold=2000)}. The
+        title shows one threshold, or each dataset's when they differ.
     :param zones, zone_field: zone layer for the datasets counted here.
     :param regions: region names to plot (e.g. ["All", "Bezirk Aarau"]);
         None = those present in every dataset: "All" plus every zone when
@@ -250,6 +276,12 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
     :param figsize, top_ratio: layout="summary" only: figure size in inches
         (default A4 portrait; None = sized by the number of panels) and the
         height of panel A relative to one row of region panels.
+    :param national_colors, national_linestyles: layout="summary" only:
+        {label: colour / line style} for panel A (Switzerland), e.g. NRT grey
+        and Retro black, both solid; default black in `linestyles`. When they
+        differ from `linestyles`, the first region panel gets its own key.
+    :param title: figure title; None = the default heading (with the
+        threshold), "" = no title.
     :param value: "proportion" (shown as %), "discolored_ha" or a
         statistics column.
     :param output_dir: saves <output_name>.png and the counts as
@@ -294,8 +326,20 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
     year_style = {lab: linestyles.get(lab, LINESTYLES[i % len(LINESTYLES)])
                   for i, lab in enumerate(labels)}
 
-    thr = f"threshold ≥ {threshold / 10000:g}" if is_prop else None
-    heading = title or ("Proportion of European beech forest discolored" if is_prop else ylabel)
+    # Threshold note: one value for all, or per dataset when they differ
+    # (datasets passed as tables without a threshold column are left out).
+    thr_by_label = {lab: stats.loc[stats.dataset == lab, "threshold"].dropna().unique() for lab in labels}
+    thr_by_label = {lab: t[0] for lab, t in thr_by_label.items() if len(t) == 1}
+    if not is_prop or not thr_by_label:
+        thr = None
+    elif len(set(thr_by_label.values())) == 1:
+        thr = f"threshold ≥ {next(iter(thr_by_label.values())) / 10000:g}"
+    else:
+        thr = "thresholds: " + ", ".join(f"{lab} ≥ {t / 10000:g}" for lab, t in thr_by_label.items())
+    if title == "":                     # no title (e.g. a figure with a caption)
+        heading = thr = ""
+    else:
+        heading = title or ("Proportion of European beech forest discolored" if is_prop else ylabel)
 
     if font_scale is None:
         font_scale = 0.85 if layout == "summary" else 1.4
@@ -303,7 +347,7 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
         if layout == "summary":
             fig = _plot_summary(data, labels, regions, value, region_color, year_style, ylabel,
                                 heading + (f"\n({thr})" if thr else ""), ncols, guides, is_prop,
-                                figsize, top_ratio)
+                                figsize, top_ratio, national_colors, national_linestyles)
         elif layout == "panels" and len(regions) > 1:
             ncols = min(ncols, len(regions))
             nrows = -(-len(regions) // ncols)
@@ -336,7 +380,8 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
 
             if len(all_axes) == 1:
                 ax = all_axes[0]
-                ax.set_title(heading + (f"\n({thr})" if thr else ""))
+                if heading:
+                    ax.set_title(heading + (f"\n({thr})" if thr else ""))
                 ax.set_xlabel("Date (month/day)")
                 ax.set_ylabel(ylabel)
                 if len(regions) > 1:
@@ -356,7 +401,8 @@ def plot_year_comparison(datasets, threshold=4000, zones=None, zone_field="bznam
                 else:
                     ax.legend(loc="upper left")
             else:
-                fig.suptitle(heading + (f" ({thr})" if thr else ""))
+                if heading:
+                    fig.suptitle(heading + (f" ({thr})" if thr else ""))
                 fig.supxlabel("Date (month/day)")
                 fig.supylabel(ylabel)
                 all_axes[0].legend(loc="upper left")

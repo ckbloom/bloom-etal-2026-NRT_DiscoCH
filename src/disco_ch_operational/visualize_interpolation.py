@@ -201,7 +201,7 @@ def plot_pixel(tss_path, row=None, col=None, date_range=None, doy_range=(1, 365)
                despike=False, above_noise=3.0, below_noise=1.0, show_components=True,
                component_data="nrt", written=None, scale=10000,
                print_effective_bandwidth=False, title=None, ax=None,
-               output_path=None, font_scale=1.2):
+               output_path=None, font_scale=1.2, legend="right"):
     """Plot one pixel's observations and its RBF interpolation(s).
 
     :param tss_path: FORCE *_TSS.tif (one band per acquisition).
@@ -233,6 +233,8 @@ def plot_pixel(tss_path, row=None, col=None, date_range=None, doy_range=(1, 365)
     :param print_effective_bandwidth: print effective_bandwidth_stats() for
         the retrospective ensemble (in file units).
     :param ax: draw into this axis instead of a new figure.
+    :param legend: "right" (outside, right of the axis) or "below" (under
+        the axis in columns -- for a figure the width of a page).
     :return: (fig, (row, col), dates, raw, cleaned, removed) -- acquisition
         dates and the pixel's raw series, the series the RBF sees, and the
         mask of despiked observations.
@@ -319,7 +321,11 @@ def plot_pixel(tss_path, row=None, col=None, date_range=None, doy_range=(1, 365)
         ax.xaxis.set_major_locator(mdates.MonthLocator())
         ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m"))
         ax.grid(alpha=0.3)
-        ax.legend(fontsize="small", loc="upper left", bbox_to_anchor=(1.01, 1))
+        if legend == "below":
+            ax.legend(fontsize="x-small", loc="upper center", bbox_to_anchor=(0.5, -0.2), ncol=3,
+                      frameon=False)
+        else:
+            ax.legend(fontsize="small", loc="upper left", bbox_to_anchor=(1.01, 1))
         for label in ax.get_xticklabels():  # per axis: autofmt_xdate() would hide the
             label.set_rotation(30)          # dates of all but the bottom panel
             label.set_horizontalalignment("right")

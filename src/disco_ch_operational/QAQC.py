@@ -508,6 +508,10 @@ def _labelled_sample(labels, key, label_col, summary, layer=None, conf_col="conf
         out = df["in_mask"] == 0
         print(f"{out.sum()} points outside the mask dropped")
         df = df[~out].copy()
+    if "in_subsample" in df:  # subsample_key(): the points not drawn are not in the design
+        out = df["in_subsample"] == 0
+        print(f"{out.sum()} points not in the subsample dropped")
+        df = df[~out].copy()
     missing = df["label"].isna()
     print(f"{len(df)} sample points matched to labels; {missing.sum()} unlabelled dropped")
     df = df[~missing].copy()
@@ -1251,6 +1255,186 @@ def recall_table(maps, polygons, raster_name, thresholds=(0.4,), layer=None, reg
         o.mkdir(parents=True, exist_ok=True)
         overall.to_csv(o / f"polygon_recall_table_{Path(str(raster_name)).stem}.csv", index=False)
     return overall, full
+
+
+# ---------------------------------------------------------------------------
+# Paper tables at each map's own F1-optimized threshold
+# ---------------------------------------------------------------------------
+
+def subsample_key(key, labels, n_per_class=100, by="class", seed=2026, layer="all", outfile=None):
+    """The sample key with in_subsample = 1 for a simple random draw (without
+    replacement) of n_per_class of the points in the mask (in_mask = 1) of
+    each date and class (`by`; the five 0.2-wide probability strata of the
+    sampled map), 0 for the rest -- labelled or not, so the draw is blind to
+    the labels; drawn points without a label are simply not annotated.
+    Classes with fewer points keep them all (and are reported). Within each
+    sub-stratum the kept points stay a simple random sample, so the
+    stratified estimators (n_h from the points used) stay unbiased. The same
+    key serves every map (rescore_key() keeps the column).
+
+    :param key, labels, layer: as optimized_point_table().
+    :param seed: fixed, so the draw is reproducible.
+    :param outfile: also write the key there (.csv).
+    :return: the key with in_subsample.
+    """
+    k = _read_table(key).copy()
+    lab = _read_labels(labels, layer)
+    lab = lab[lab["sample_id"].notna()]
+    labelled = set(lab.loc[pd.to_numeric(lab["label"], errors="coerce").notna(), "sample_id"])
+    pool = (k["in_mask"] == 1) if "in_mask" in k else pd.Series(True, index=k.index)
+    rng = np.random.default_rng(seed)
+    k["in_subsample"] = 0
+    counts = []
+    for (date, cls), g in k[pool].groupby(["date", by], sort=True):
+        take = g.index if len(g) <= n_per_class else rng.choice(g.index, n_per_class, replace=False)
+        k.loc[take, "in_subsample"] = 1
+        counts.append(dict(date=date, **{by: cls}, in_mask=len(g), selected=len(take),
+                           annotated=int(k.loc[take, "sample_id"].isin(labelled).sum())))
+    counts = pd.DataFrame(counts)
+    print(f"Subsample: up to {n_per_class} points per date and {by} (seed {seed}); "
+          f"{int(counts.selected.sum())} selected, {int(counts.annotated.sum())} annotated")
+    print(counts.to_string(index=False))
+    if outfile is not None:
+        Path(outfile).parent.mkdir(parents=True, exist_ok=True)
+        k.to_csv(outfile, index=False)
+        print(f"wrote {outfile}")
+    return k
+
+
+CONFIDENCE_NAMES = {1: "All (≥ 1)", 2: "Moderate to high (≥ 2)", 3: "High (3)"}
+DEFAULT_THRESHOLDS = tuple(np.round(np.arange(0.05, 0.96, 0.05), 2))
+
+
+def weighted_scores(g, s, threshold):
+    """Area-weighted confusion shares and precision / recall / F1, each with
+    its SE, of points g (one date) and their strata s at one threshold --
+    the estimators of confusion_stats() (strata without points left out).
+    F1 = 2 TP / (2 TP + FP + FN) is a ratio of two stratified totals, so its
+    SE comes from the same ratio estimator as precision and recall."""
+    s = s[s["stratum"].isin(g["stratum"])]
+    m = (g["probability"] >= threshold).astype(float)
+    ref = g["label"].astype(float)
+    cells = {"TP": m * ref, "FP": m * (1 - ref), "FN": (1 - m) * ref, "TN": (1 - m) * (1 - ref)}
+    out = {}
+    for k, v in cells.items():
+        out[k], out[f"{k}_se"] = _strat_mean(g, v, s)
+    out["precision"], out["precision_se"] = _strat_ratio(g, m * ref, m, s)
+    out["recall"], out["recall_se"] = _strat_ratio(g, m * ref, ref, s)
+    out["f1"], out["f1_se"] = _strat_ratio(g, 2 * m * ref, m + ref, s)
+    return out
+
+
+def optimized_point_table(maps, labels, key, summary=None, min_confidence=(1, 2), layer="all",
+                          thresholds=DEFAULT_THRESHOLDS, outdir=None):
+    """Point validation of several maps, each scored at the threshold that
+    maximizes its area-weighted F1, separately per map, minimum label
+    confidence and date (all dates combined as "All", then each date).
+
+    :param maps: {label: folder of masked Disco_Proba_<date>.tif}.
+    :param labels, key, summary, layer: as point_validation_table().
+    :param thresholds: candidate thresholds (default 0.05, 0.10, ... 0.95);
+        ties go to the lowest.
+    :param outdir: writes table1_point_validation.csv (the formatted table)
+        and table_S1_point_validation_all_thresholds.csv (the same for every
+        candidate threshold, the optimized one marked).
+    :return: (long DataFrame of every threshold -- numbers, SEs and an
+        "optimized" flag; Table 1 is long[long.optimized] --, formatted Table 1)
+    """
+    rows = []
+    for name, masked_dir in maps.items():
+        print(f"=== {name}: {masked_dir}")
+        k = rescore_key(key, masked_dir)
+        for mc in min_confidence:
+            df, strata = _labelled_sample(labels, k, "label", summary, layer, min_confidence=mc)
+            df, strata = _combine_dates(df, strata)
+            for date, g in df.groupby("date"):
+                s = strata[strata["date"] == date]
+                scores = [(t, weighted_scores(g, s, t)) for t in thresholds]
+                f1 = np.array([sc["f1"] for _, sc in scores], dtype=float)
+                best = int(np.nanargmax(f1)) if not np.isnan(f1).all() else -1
+                day = re.search(r"\d{4}-\d{2}-\d{2}", str(date))   # layer name -> its date
+                day = "All" if date == ALL_DATES else day.group(0) if day else str(date)
+                for i, (t, sc) in enumerate(scores):
+                    rows.append(dict(map=str(name), min_confidence=mc, date=day, threshold=t,
+                                     optimized=i == best, n=len(g), **sc))
+    long = pd.DataFrame(rows)
+    # All dates first, then the dates in order; thresholds ascending
+    long["_d"] = long["date"].map(lambda d: "" if d == "All" else d)
+    long = long.sort_values(["map", "min_confidence", "_d", "threshold"],
+                            key=lambda c: c.map({str(m): i for i, m in enumerate(maps)}) if c.name == "map" else c)
+    long = long.drop(columns="_d").reset_index(drop=True)
+
+    def formatted(d, threshold_col):
+        fmt = lambda r, c: f"{r[c]:.2f} ± {1.96 * r[c + '_se']:.2f}" if pd.notna(r[c + "_se"]) else f"{r[c]:.2f}"
+        return pd.DataFrame({
+            "Map": d["map"],
+            "Confidence": d["min_confidence"].map(lambda c: CONFIDENCE_NAMES.get(c, f"≥ {c}")),
+            "Date": d["date"],
+            threshold_col: d["threshold"].map(lambda t: f"{t:.2f}"),
+            **{c: d.apply(fmt, axis=1, c=c) for c in ("TP", "FP", "FN", "TN")},
+            **{c.capitalize() if c != "f1" else "F1": d.apply(fmt, axis=1, c=c)
+               for c in ("precision", "recall", "f1")},
+            "n": d["n"],
+        }).reset_index(drop=True)
+
+    table = formatted(long[long["optimized"]], "Optimized threshold")
+    if outdir is not None:
+        o = Path(outdir)
+        o.mkdir(parents=True, exist_ok=True)
+        table.to_csv(o / "table1_point_validation.csv", index=False, encoding="utf-8-sig")
+        s1 = formatted(long, "Threshold")
+        s1.insert(4, "Optimized", np.where(long["optimized"].to_numpy(), "*", ""))
+        s1.to_csv(o / "table_S1_point_validation_all_thresholds.csv", index=False, encoding="utf-8-sig")
+        print(f"wrote table1_point_validation.csv and table_S1_point_validation_all_thresholds.csv to {o}")
+    return long, table
+
+
+def optimized_recall_table(maps, thresholds, polygons, raster_name, regions, region_col="ktnr",
+                           names=None, layer=None, outdir=None):
+    """Pixel recall of the opportunistically mapped polygons per region
+    (e.g. canton), each map at its own threshold, side by side: one row per
+    region with "All" on top, then sorted by the first map's recall, best
+    first.
+
+    :param maps: {label: folder of masked rasters}.
+    :param thresholds: {label: threshold} per map, e.g. from
+        optimized_point_table() (all dates, confidence >= 2).
+    :param raster_name: the map of the mapping date, e.g. "2026-08-14".
+    :param names: {label: column name}, e.g. {"NRT": "Near-Real-Time"}.
+    :param outdir: writes table2_recall_<raster_name>.csv (formatted).
+    :return: (DataFrame of numbers, formatted table)
+    """
+    names = names or {}
+    cols, n_pixels = {}, None
+    for name, masked_dir in maps.items():
+        t = float(thresholds[name])
+        print(f"=== {name}: threshold {t:g}")
+        rec, _ = polygon_recall(polygons, find_map(masked_dir, raster_name), (t,), layer=layer,
+                                regions=regions, region_col=region_col, dataset=str(name))
+        rec = rec.set_index("region")
+        cols[f"{names.get(name, name)} recall (t = {t:.2f})"] = rec["pixel_recall"]
+        if n_pixels is None:
+            n_pixels = rec["n_pixels"]
+        elif not n_pixels.equals(rec["n_pixels"]):
+            print(f"  note: {name} has a different number of valid pixels; the first map's counts are shown")
+    region_name = {"ktnr": "Canton"}.get(region_col, region_col)
+    res = pd.DataFrame({"Pixels mapped": n_pixels, **cols})
+    res.index = res.index.map(lambda r: "All" if r == "all" else r)
+    first = next(iter(cols))
+    res = pd.concat([res.loc[["All"]], res.drop(index="All").sort_values(first, ascending=False)])
+    res.index.name = region_name
+    res = res.reset_index()
+    table = res.copy()
+    table["Pixels mapped"] = table["Pixels mapped"].map(lambda v: f"{int(v):,}")
+    for c in cols:
+        table[c] = table[c].map(lambda v: f"{v:.2f}" if pd.notna(v) else "")
+    if outdir is not None:
+        o = Path(outdir)
+        o.mkdir(parents=True, exist_ok=True)
+        stem = f"table2_recall_{Path(str(raster_name)).stem}"
+        table.to_csv(o / f"{stem}.csv", index=False, encoding="utf-8-sig")
+        print(f"wrote {stem}.csv to {o}")
+    return res, table
 
 
 if __name__ == '__main__':

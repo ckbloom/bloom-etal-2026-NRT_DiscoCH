@@ -225,7 +225,9 @@ def plot_hex_maps(datasets, threshold=4000, hex_area_km2=3, boundary=None, month
 
     :param datasets: {label: dict(mosaic_dir=..., pattern=..., year=...,
         nodata=...)}, e.g. {"2018": ..., "2026": ...}; columns in this order.
-    :param threshold: stored value at/above which a pixel is discolored.
+    :param threshold: stored value at/above which a pixel is discolored; a
+        dataset dict's own "threshold" key overrides it, e.g.
+        {"2018": dict(..., threshold=4000), "2026": dict(..., threshold=2000)}.
     :param hex_area_km2: hexagon size.
     :param boundary: polygons to build the grid over and clip it (and the
         relief) to (path or GeoDataFrame, e.g. the districts); None = the
@@ -249,8 +251,9 @@ def plot_hex_maps(datasets, threshold=4000, hex_area_km2=3, boundary=None, month
         region_color / region_linewidth style the lines.
     :param title: optional figure title (none by default).
     :param output_dir: saves <output_name>.png (default
-        hex_discoloration_<labels>_t<threshold>.png), the run parameters and,
-        with export_hexes, hex_<label>_t<threshold>.gpkg per dataset.
+        hex_discoloration_<labels>_t<threshold>.png, the thresholds joined
+        by "-" when they differ), the run parameters and, with export_hexes,
+        hex_<label>_t<its threshold>.gpkg per dataset.
     :param stats_kw: chunk_size, max_workers for the counting.
     :return: {label: hex_discoloration() GeoDataFrame}.
     """
@@ -274,12 +277,15 @@ def plot_hex_maps(datasets, threshold=4000, hex_area_km2=3, boundary=None, month
     grid = hex_grid(bounds, hex_area_km2, HEX_CRS, boundary)
     print(f"{len(grid):,} hexagons of {hex_area_km2:g} km2")
 
-    hexes, fields = {}, {}
+    hexes, fields, thresholds = {}, {}, {}
     for label, spec in zip(labels, datasets.values()):
-        print(f"\n{label}:")
-        out = (os.path.join(output_dir, f"hex_{label}_t{threshold:g}.gpkg")
+        spec = dict(spec)
+        thresholds[label] = spec.pop("threshold", threshold)   # per dataset, else the shared one
+        print(f"\n{label} (threshold >= {thresholds[label]:g}):")
+        out = (os.path.join(output_dir, f"hex_{label}_t{thresholds[label]:g}.gpkg")
                if output_dir and export_hexes else None)
-        hexes[label] = hex_discoloration(threshold=threshold, hexes=grid, output=out, **spec, **stats_kw)
+        hexes[label] = hex_discoloration(threshold=thresholds[label], hexes=grid, output=out, **spec,
+                                         **stats_kw)
         fields[label] = month_end_fields(hexes[label], months)
         missing = [m for m in months if m not in fields[label]]
         if missing:
@@ -377,12 +383,13 @@ def plot_hex_maps(datasets, threshold=4000, hex_area_km2=3, boundary=None, month
 
         if output_dir:
             os.makedirs(output_dir, exist_ok=True)
-            name = output_name or f"hex_discoloration_{'_vs_'.join(labels)}_t{threshold:g}"
+            thr_tag = "-".join(dict.fromkeys(f"{t:g}" for t in thresholds.values()))
+            name = output_name or f"hex_discoloration_{'_vs_'.join(labels)}_t{thr_tag}"
             png = os.path.join(output_dir, name + ".png")
             fig.savefig(png, dpi=200, bbox_inches="tight", facecolor="white")
             print(f"Saved {png}")
             write_run_params(output_dir, "hexmap.plot_hex_maps",
-                             dict(datasets=datasets, threshold=threshold, hex_area_km2=hex_area_km2,
+                             dict(datasets=datasets, thresholds=thresholds, hex_area_km2=hex_area_km2,
                                   boundary=boundary_path, months=months, vmax=vmax, years_as=years_as,
                                   regions=regions if isinstance(regions, (str, os.PathLike)) else None),
                              {lab: {m: f for m, f in fields[lab].items()} for lab in labels})

@@ -15,6 +15,7 @@ import re
 import csv
 import glob
 import json
+import time
 import shutil
 import contextlib
 from datetime import date, datetime
@@ -349,7 +350,7 @@ def read_scaled(path):
 # Mosaicking
 # ---------------------------------------------------------------------
 
-def mosaic_by_filename(tile_dirs, mosaic_dir, pattern, key=None):
+def mosaic_by_filename(tile_dirs, mosaic_dir, pattern, key=None, verbose=False):
     """Merges same-named files (e.g. Disco_Proba_2026-06-15.tif) across
     tile folders into one file per name in mosaic_dir. A mosaic newer than
     all its tile files is left alone, so re-running only redoes dates that
@@ -358,6 +359,7 @@ def mosaic_by_filename(tile_dirs, mosaic_dir, pattern, key=None):
     key: optional function path -> mosaic file name, for tiles that keep
     the tile id in the name (e.g. Proba_X0051_Y0066_2018-08-14.tif in one
     folder); default os.path.basename.
+    verbose: print each mosaic as it is built, with a running count.
 
     :return: list of mosaic paths written this call.
     """
@@ -367,11 +369,20 @@ def mosaic_by_filename(tile_dirs, mosaic_dir, pattern, key=None):
         for f in glob.glob(os.path.join(d, pattern)):
             by_name.setdefault((key or os.path.basename)(f), []).append(f)
 
+    todo = [(name, paths) for name, paths in sorted(by_name.items())
+            if not (os.path.exists(os.path.join(mosaic_dir, name)) and
+                    os.path.getmtime(os.path.join(mosaic_dir, name)) >= max(map(os.path.getmtime, paths)))]
+    if verbose:
+        print(f"Mosaicking {len(todo)} of {len(by_name)} date(s) into {mosaic_dir} "
+              f"({len(by_name) - len(todo)} already up to date)", flush=True)
+
     written = []
-    for name, paths in sorted(by_name.items()):
+    t0 = time.monotonic()
+    for i, (name, paths) in enumerate(todo, start=1):
         out_path = os.path.join(mosaic_dir, name)
-        if os.path.exists(out_path) and os.path.getmtime(out_path) >= max(map(os.path.getmtime, paths)):
-            continue
+        if verbose:
+            print(f"  [{i}/{len(todo)}, {format_duration(time.monotonic() - t0)}] "
+                  f"{name} from {len(paths)} tile(s)", flush=True)
         if len(paths) == 1:
             shutil.copy(paths[0], out_path)
         else:

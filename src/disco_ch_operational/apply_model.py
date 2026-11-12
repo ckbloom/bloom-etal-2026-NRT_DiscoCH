@@ -426,7 +426,7 @@ def apply_discoch_tiles(rbf_dir, out_dir, year, model_path, vi_keys=None,
     if mosaic and run_model and model_path:
         tile_outs = [os.path.join(out_dir, os.path.basename(t)) for t in tile_dirs]
         mosaics = mosaic_by_filename([t for t in tile_outs if os.path.isdir(t)],
-                                     os.path.join(out_dir, "mosaic"), PROBA_PATTERN)
+                                     os.path.join(out_dir, "mosaic"), PROBA_PATTERN, verbose=True)
         print(f"Mosaicked {len(mosaics)} new/updated date(s) into {os.path.join(out_dir, 'mosaic')}")
         if plot_mosaic:
             for path in mosaics:
